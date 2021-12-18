@@ -8,6 +8,7 @@
 #include <dlfcn.h>
 #include <unistd.h>
 #include <fcntl.h>
+#include <android/dlext.h>
 #include <android/log.h>
 #include "elf_soname_patcher.h"
 #include "android_linker_ns.h"
@@ -16,6 +17,7 @@ using loader_android_create_namespace_t = android_namespace_t *(*)(const char *,
 static loader_android_create_namespace_t loader_android_create_namespace;
 
 static bool lib_loaded;
+
 
 /* Public API */
 bool linkernsbypass_load_status() {
@@ -27,10 +29,10 @@ struct android_namespace_t *android_create_namespace(const char *name,
                                                      const char *default_library_path,
                                                      uint64_t type,
                                                      const char *permitted_when_isolated_path,
-                                                     struct android_namespace_t *parent_namespace) {
-    auto caller_addr{__builtin_return_address(0)};
+                                                     android_namespace_t *parent_namespace) {
+    auto caller{__builtin_return_address(0)};
     return loader_android_create_namespace(name, ld_library_path, default_library_path, type,
-                                           permitted_when_isolated_path, parent_namespace, caller_addr);
+                                           permitted_when_isolated_path, parent_namespace, caller);
 }
 
 struct android_namespace_t *android_create_namespace_escape(const char *name,
@@ -38,10 +40,10 @@ struct android_namespace_t *android_create_namespace_escape(const char *name,
                                                             const char *default_library_path,
                                                             uint64_t type,
                                                             const char *permitted_when_isolated_path,
-                                                            struct android_namespace_t *parent_namespace) {
-    auto caller_addr{reinterpret_cast<void *>(&dlopen)};
+                                                            android_namespace_t *parent_namespace) {
+    auto caller{reinterpret_cast<void *>(&dlopen)};
     return loader_android_create_namespace(name, ld_library_path, default_library_path, type,
-                                           permitted_when_isolated_path, parent_namespace, caller_addr);
+                                           permitted_when_isolated_path, parent_namespace, caller);
 }
 
 android_get_exported_namespace_t android_get_exported_namespace;
@@ -50,30 +52,20 @@ android_link_namespaces_all_libs_t android_link_namespaces_all_libs;
 
 android_link_namespaces_t android_link_namespaces;
 
-// We have to resolve android_dlopen_ext ourselves as a hook library could overwrite it and then call dlopen_hooked
-decltype(&android_dlopen_ext) libdl_android_dlopen_ext;
+bool linkernsbypass_link_namespace_to_default_all_libs(android_namespace_t *to) {
+    // Creating a shared namespace with the default parent will give a copy of the default namespace that we can actually access
+    // This is needed since there is no way to access a direct handle to the default namespace as it's not exported
+    static auto defaultNs{android_create_namespace_escape("default_copy", nullptr, nullptr, ANDROID_NAMESPACE_TYPE_SHARED, nullptr, nullptr)};
+    return android_link_namespaces_all_libs(to, defaultNs);
+}
 
-bool linkernsbypass_namespace_apply_hook(const char *hookLibName, struct android_namespace_t *hookNs, const void *hookParam) {
-    android_dlextinfo hookExtInfo{
+void *linkernsbypass_namespace_dlopen(const char *filename, int flags, android_namespace_t *ns) {
+    android_dlextinfo extInfo{
         .flags = ANDROID_DLEXT_USE_NAMESPACE,
-        .library_namespace = hookNs
+        .library_namespace = ns
     };
 
-    // Load hook syms into the NS as global
-    auto hookLib{libdl_android_dlopen_ext(hookLibName, RTLD_GLOBAL, &hookExtInfo)};
-    if (!hookLib)
-        return false;
-
-    // Set optional parameter
-    auto hookParamSym{reinterpret_cast<const void **>(dlsym(hookLib, "hook_param"))};
-    if (hookParamSym || hookParam) {
-        if (hookParamSym && hookParam)
-            *hookParamSym = hookParam;
-        else
-            return false;
-    }
-
-    return true;
+    return android_dlopen_ext(filename, flags, &extInfo);
 }
 
 #ifndef __NR_memfd_create
@@ -84,26 +76,8 @@ bool linkernsbypass_namespace_apply_hook(const char *hookLibName, struct android
     #endif
 #endif
 
-void *linkernsbypass_dlopen_unique_hooked(const char *libPath, const char *libTargetDir, int mode, const char *hookLibDir, const char *hookLibName, struct android_namespace_t *parentNs, bool linkToDefault, const void *hookParam) {
+void *linkernsbypass_namespace_dlopen_unique(const char *libPath, const char *libTargetDir, int flags, android_namespace_t *ns) {
     static std::array<char, PATH_MAX> PathBuf{};
-
-    // Create a namespace that can isolate our hook from the default
-    auto hookNs{android_create_namespace(libPath, hookLibDir, nullptr, ANDROID_NAMESPACE_TYPE_SHARED, nullptr, parentNs)};
-
-    if (linkToDefault) {
-        auto defaultNs{android_create_namespace_escape("default_copy", nullptr, nullptr, ANDROID_NAMESPACE_TYPE_SHARED, nullptr, nullptr)};
-        android_link_namespaces_all_libs(hookNs, defaultNs);
-    }
-
-    android_link_namespaces_all_libs(hookNs, parentNs);
-
-    if (hookLibName) {
-        if (!linkernsbypass_namespace_apply_hook(hookLibName, hookNs, hookParam))
-            return nullptr;
-    } else {
-        if (hookParam)
-            return nullptr;
-    }
 
     // Used as a unique ID for overwriting soname and creating target lib files
     static uint16_t TargetId{};
@@ -136,13 +110,13 @@ void *linkernsbypass_dlopen_unique_hooked(const char *libPath, const char *libTa
     android_dlextinfo hookExtInfo{
         .flags = ANDROID_DLEXT_USE_NAMESPACE | ANDROID_DLEXT_USE_LIBRARY_FD,
         .library_fd = libTargetFd,
-        .library_namespace = hookNs
+        .library_namespace = ns
     };
 
     // Make a path that looks about right
     snprintf(PathBuf.data(), PathBuf.size(), "/proc/self/fd/%d", libTargetFd);
 
-    return libdl_android_dlopen_ext(PathBuf.data(), mode, &hookExtInfo);
+    return android_dlopen_ext(PathBuf.data(), flags, &hookExtInfo);
 }
 
 /* Private */
@@ -196,14 +170,6 @@ __attribute__((constructor)) static void resolve_linker_symbols() {
 
     android_get_exported_namespace = reinterpret_cast<android_get_exported_namespace_t>(dlsym(libdlAndroidHandle, "__loader_android_get_exported_namespace"));
     if (!android_get_exported_namespace)
-        return;
-
-    auto libdlHandle{dlopen("libdl.so", RTLD_LAZY)};
-    if (!libdlHandle)
-        return;
-
-    libdl_android_dlopen_ext = reinterpret_cast<decltype(&android_dlopen_ext)>(dlsym(libdlHandle, "android_dlopen_ext"));
-    if (!libdl_android_dlopen_ext)
         return;
 
     // Lib is now safe to use

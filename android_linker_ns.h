@@ -7,7 +7,6 @@
 extern "C" {
 #endif
 
-#include <android/dlext.h>
 #include <stdint.h>
 
 // https://cs.android.com/android/platform/superproject/+/0a492a4685377d41fef2b12e9af4ebfa6feef9c2:art/libnativeloader/include/nativeloader/dlext_namespaces.h;l=25;bpv=1;bpt=1
@@ -54,31 +53,28 @@ extern android_link_namespaces_all_libs_t android_link_namespaces_all_libs;
 typedef bool (*android_link_namespaces_t)(struct android_namespace_t *, struct android_namespace_t *, const char *);
 extern android_link_namespaces_t android_link_namespaces;
 
-// android_dlopen_ext but loaded directly from libdl hence ignoring any hooks
-extern decltype(&android_dlopen_ext) libdl_android_dlopen_ext;
-
 /**
- * @brief Effectively LD_PRELOAD for a specific namespace with extra bells and whistles
- * @note  IMPORTANT: hook libraries supplied to this must be compiled with the '-z global' linker flag
- * @param hookLibName The soname of the library with hooks to be loaded into `hookNs`
- * @param hookNs The namespace to load the hook into
- * @param hookParam will be written to the `hook_param` symbol in the hook library straight after loading if it is not null
+ * @brief Like android_link_namespaces_all_libs but links from the default namespace
  */
-bool linkernsbypass_namespace_apply_hook(const char *hookLibName, struct android_namespace_t *hookNs, const void *hookParam);
+bool linkernsbypass_link_namespace_to_default_all_libs(struct android_namespace_t *to);
 
 /**
- * @brief Effectively a library isolated LD_PRELOAD + dlopen combo with extra bells and whistles
- * @note  IMPORTANT: hook libraries supplied to this must be compiled with the '-z global' linker flag
+ * @brief Loads a library into a namespace
+ * @note IMPORTANT: If `filename` is compiled with the '-z global' linker flag and RTLD_GLOBAL is supplied in `flags` the library will be added to the namespace's LD_PRELOAD list
+ * @param filename The name of the library to load
+ * @param flags The rtld flags for `filename`
+ * @param ns The namespace to dlopen into
+ */
+void *linkernsbypass_namespace_dlopen(const char *filename, int flags, struct android_namespace_t *ns);
+
+/**
+ * @brief Force loads a unique instance of a library into a namespace
  * @param libPath The path to the library to load with hooks applied
  * @param libTargetDir A temporary directory to hold the soname patched library at `libPath`, will attempt to use memfd if nullptr
- * @param mode The rtld open mode for `libName`
- * @param hookLibDir The path to the directory containing hooks to be hooks applied
- * @param hookLibName The soname of the library with hooks to be to be applied to `libName`, if nullptr no hooks will be applied
- * @param parentNs Controls the parent symbol namespace of the isolated hook namespace, if nullptr is passed the default namespace will be used
- * @param linkToDefault If this new namespace should be linked to the default namespace
- * @param hookParam will be written to the `hook_param` symbol in the hook library straight after loading if it is not null
+ * @param flags The rtld flags for `libName`
+ * @param ns The namespace to dlopen into
  */
-void *linkernsbypass_dlopen_unique_hooked(const char *libPath, const char *libTargetDir, int mode, const char *hookLibDir, const char *hookLibName, struct android_namespace_t *parentNs, bool linkToDefault, const void *hookParam);
+void *linkernsbypass_namespace_dlopen_unique(const char *libPath, const char *libTargetDir, int flags, struct android_namespace_t *ns);
 
 #ifdef __cplusplus
 }

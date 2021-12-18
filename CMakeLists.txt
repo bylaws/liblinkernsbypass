@@ -6,8 +6,6 @@ endif()
 
 project(linkernsbypass LANGUAGES CXX)
 
-set(CMAKE_CXX_STANDARD 17)
-
 set(SOURCES android_linker_ns.cpp
             android_linker_ns.h
             elf_soname_patcher.cpp
@@ -15,5 +13,7 @@ set(SOURCES android_linker_ns.cpp
 
 add_library(linkernsbypass STATIC ${SOURCES})
 
+
 target_compile_options(linkernsbypass PRIVATE -Wall -Wextra)
 target_link_libraries(linkernsbypass android dl)
+target_include_directories(linkernsbypass PUBLIC .)
