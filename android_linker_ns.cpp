@@ -145,7 +145,7 @@ __attribute__((constructor)) static void resolve_linker_symbols() {
         static_assert(sizeof(BranchLinked) == 4, "BranchLinked is wrong size");
 
         // Some devices ship with --X mapping for exexecutables so work around that
-        mprotect(align_ptr(reinterpret_cast<void *>(&dlopen)), PAGE_SIZE, PROT_READ | PROT_EXEC);
+        mprotect(align_ptr(reinterpret_cast<void *>(&dlopen)), PAGE_SIZE, PROT_WRITE | PROT_READ | PROT_EXEC);
 
         // dlopen is just a wrapper for __loader_dlopen that passes the return address as the third arg hence we can just walk it to find __loader_dlopen
         auto blInstr{reinterpret_cast<BranchLinked *>(&dlopen)};
@@ -156,7 +156,7 @@ __attribute__((constructor)) static void resolve_linker_symbols() {
     }()};
 
     // Protect the loader_dlopen function to remove the BTI attribute (since this is an internal function that isn't intended to be jumped indirectly to)
-    mprotect(align_ptr(reinterpret_cast<void *>(&loader_dlopen)), PAGE_SIZE, PROT_READ | PROT_EXEC);
+    mprotect(align_ptr(reinterpret_cast<void *>(&loader_dlopen)), PAGE_SIZE, PROT_WRITE | PROT_READ | PROT_EXEC);
 
     // Passing dlopen as a caller address tricks the linker into using the internal unrestricted namespace letting us access libraries that are normally forbidden in the classloader namespace imposed on apps
     auto ldHandle{loader_dlopen("ld-android.so", RTLD_LAZY, reinterpret_cast<void *>(&dlopen))};
