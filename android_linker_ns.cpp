@@ -10,6 +10,7 @@
 #include <fcntl.h>
 #include <android/dlext.h>
 #include <android/log.h>
+#include <api-level.h>
 #include <sys/mman.h>
 #include "elf_soname_patcher.h"
 #include "android_linker_ns.h"
@@ -127,6 +128,9 @@ static void *align_ptr(void *ptr) {
 /* Private */
 __attribute__((constructor)) static void resolve_linker_symbols() {
     using loader_dlopen_t = void *(*)(const char *, int, const void *);
+
+    if (android_get_device_api_level() < 28)
+        return;
 
     // ARM64 specific function walking to locate the internal dlopen handler
     auto loader_dlopen{[]() {
