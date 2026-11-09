@@ -20,9 +20,17 @@ static loader_android_create_namespace_t loader_android_create_namespace;
 
 static bool lib_loaded;
 
+static void resolve_linker_symbols();
 
 /* Public API */
 bool linkernsbypass_load_status() {
+    // Resolved on first use rather than from a constructor, so that apps which never use the library
+    // don't poke at linker internals during System.loadLibrary.
+    static const bool resolved{[]() {
+        resolve_linker_symbols();
+        return true;
+    }()};
+    (void)resolved;
     return lib_loaded;
 }
 
@@ -126,7 +134,7 @@ static void *align_ptr(void *ptr) {
 }
 
 /* Private */
-__attribute__((constructor)) static void resolve_linker_symbols() {
+static void resolve_linker_symbols() {
     using loader_dlopen_t = void *(*)(const char *, int, const void *);
 
     if (android_get_device_api_level() < 28)
@@ -149,18 +157,24 @@ __attribute__((constructor)) static void resolve_linker_symbols() {
         static_assert(sizeof(BranchLinked) == 4, "BranchLinked is wrong size");
 
         // Some devices ship with --X mapping for exexecutables so work around that
-        mprotect(align_ptr(reinterpret_cast<void *>(&dlopen)), getpagesize(), PROT_WRITE | PROT_READ | PROT_EXEC);
+        mprotect(align_ptr(reinterpret_cast<void *>(&dlopen)), getpagesize(), PROT_READ | PROT_EXEC);
 
         // dlopen is just a wrapper for __loader_dlopen that passes the return address as the third arg hence we can just walk it to find __loader_dlopen
+        // Give up rather than run off the end if the wrapper doesn't look like that any more.
+        constexpr int MaxWrapperInstrs{32};
         auto blInstr{reinterpret_cast<BranchLinked *>(&dlopen)};
-        while (!blInstr->Verify())
-            blInstr++;
+        for (int i{}; !blInstr->Verify(); i++, blInstr++)
+            if (i == MaxWrapperInstrs)
+                return static_cast<loader_dlopen_t>(nullptr);
 
         return reinterpret_cast<loader_dlopen_t>(blInstr + blInstr->offset);
     }()};
+    if (!loader_dlopen)
+        return;
 
-    // Protect the loader_dlopen function to remove the BTI attribute (since this is an internal function that isn't intended to be jumped indirectly to)
-    mprotect(align_ptr(reinterpret_cast<void *>(&loader_dlopen)), getpagesize(), PROT_WRITE | PROT_READ | PROT_EXEC);
+    // Protect the loader_dlopen function to remove the BTI attribute (since this is an internal function that isn't intended to be jumped indirectly to).
+    // Its page can differ from dlopen's.
+    mprotect(align_ptr(reinterpret_cast<void *>(loader_dlopen)), getpagesize(), PROT_READ | PROT_EXEC);
 
     // Passing dlopen as a caller address tricks the linker into using the internal unrestricted namespace letting us access libraries that are normally forbidden in the classloader namespace imposed on apps
     auto ldHandle{loader_dlopen("ld-android.so", RTLD_LAZY, reinterpret_cast<void *>(&dlopen))};
